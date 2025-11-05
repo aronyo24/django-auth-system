@@ -1,5 +1,5 @@
-from django.db import models
 from django.contrib.auth.models import User
+from django.db import models
 from django.utils import timezone
 
 
@@ -79,4 +79,13 @@ class UserProfile(models.Model):
         self.otp_expires_at = None
         self.otp_consumed_at = None
         self.otp_used = False
-        self.save(update_fields=['otp_code', 'otp_purpose', 'otp_expires_at', 'otp_consumed_at', 'otp_used', 'updated_at'])
+        self.save(
+            update_fields=[
+                'otp_code',
+                'otp_purpose',
+                'otp_expires_at',
+                'otp_consumed_at',
+                'otp_used',
+                'updated_at',
+            ]
+        )

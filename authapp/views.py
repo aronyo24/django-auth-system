@@ -1,18 +1,18 @@
+from datetime import timedelta
+import random
 
-from django.shortcuts import render, redirect
 from django.contrib import messages
 from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.models import User
-from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
-from django.utils.encoding import force_bytes, force_str
 from django.contrib.auth.tokens import default_token_generator
-from django.core.mail import EmailMessage
-from django.urls import reverse
 from django.contrib.sites.shortcuts import get_current_site
+from django.core.mail import EmailMessage
+from django.shortcuts import redirect, render
 from django.template.loader import render_to_string
+from django.urls import reverse
 from django.utils import timezone
-from datetime import timedelta
-import random
+from django.utils.encoding import force_bytes, force_str
+from django.utils.http import urlsafe_base64_decode, urlsafe_base64_encode
 
 from .models import UserProfile
 
@@ -50,8 +50,10 @@ def _issue_otp_and_send_email(request, user):
     profile.issue_otp(otp_code, UserProfile.REGISTRATION, expires)
     return otp_code
 
+
 def home_view(request):
     return render(request, 'base.html')
+
 
 def register_view(request):
     if request.method == 'POST':
@@ -150,14 +152,11 @@ def verify_otp_view(request):
 
         # Mark user active and OTP used
         user.is_active = True
-        user.save()
+        user.save(update_fields=['is_active'])
         profile.mark_otp_used()
         profile.mark_email_verified()
         # Clear pending session
-        try:
-            del request.session['pending_user_id']
-        except KeyError:
-            pass
+        request.session.pop('pending_user_id', None)
 
         messages.success(request, 'Your account has been verified! You can now log in.')
         return redirect('login')
