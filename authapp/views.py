@@ -51,6 +51,37 @@ def _issue_otp_and_send_email(request, user):
     return otp_code
 
 
+def _issue_password_reset_otp(request, user):
+    """Send a password reset OTP email and persist the code for validation."""
+
+    otp_code = f"{random.randint(0, 10 ** OTP_LENGTH - 1):0{OTP_LENGTH}d}"
+    expires = timezone.now() + timedelta(minutes=OTP_EXPIRATION_MINUTES)
+
+    current_site = get_current_site(request)
+    message = render_to_string(
+        'password_reset_email.html',
+        {
+            'user': user,
+            'otp_code': otp_code,
+            'domain': current_site.domain,
+            'expiry_minutes': OTP_EXPIRATION_MINUTES,
+        },
+    )
+
+    email_msg = EmailMessage('Password Reset OTP', message, to=[user.email])
+    email_msg.content_subtype = 'html'
+    email_msg.send()
+
+    profile, _ = UserProfile.objects.get_or_create(user=user)
+    profile.issue_otp(
+        otp_code,
+        UserProfile.RESET_PASSWORD,
+        expires,
+        mark_unverified=False,
+    )
+    return otp_code
+
+
 def home_view(request):
     return render(request, 'base.html')
 
@@ -87,11 +118,10 @@ def register_view(request):
             first_name=first_name,
             last_name=last_name,
         )
-        user.is_active = False
-        user.save()
         display_name = f"{first_name} {last_name}".strip() or username
         UserProfile.objects.update_or_create(
             user=user,
+            email= email,
             defaults={'display_name': display_name},
         )
 
@@ -124,6 +154,10 @@ def activate_view(request, uidb64, token):
 def verify_otp_view(request):
     """Allow the user to submit the OTP code they received by email."""
     pending_user_id = request.session.get('pending_user_id')
+    if not pending_user_id and request.user.is_authenticated:
+        pending_user_id = request.user.pk
+        request.session['pending_user_id'] = pending_user_id
+
     if not pending_user_id:
         messages.error(request, 'No pending verification found. Please register first.')
         return redirect('register')
@@ -142,6 +176,10 @@ def verify_otp_view(request):
 
         profile, _ = UserProfile.objects.get_or_create(user=user)
 
+        if profile.otp_purpose != UserProfile.REGISTRATION:
+            messages.error(request, 'No registration OTP pending. Please request a new code.')
+            return redirect('verify_otp')
+
         if not profile.otp_matches(code):
             messages.error(request, 'Invalid OTP code.')
             return redirect('verify_otp')
@@ -158,7 +196,9 @@ def verify_otp_view(request):
         # Clear pending session
         request.session.pop('pending_user_id', None)
 
-        messages.success(request, 'Your account has been verified! You can now log in.')
+        messages.success(request, 'Your account has been verified!')
+        if request.user.is_authenticated and request.user.pk == user.pk:
+            return redirect('home')
         return redirect('login')
 
     return render(request, 'otp_verify.html')
@@ -185,7 +225,11 @@ def resend_otp_view(request):
 
     profile, _ = UserProfile.objects.get_or_create(user=user)
     now = timezone.now()
-    if profile.last_otp_sent_at and (now - profile.last_otp_sent_at) < timedelta(minutes=OTP_RESEND_WAIT_MINUTES):
+    if (
+        profile.otp_purpose == UserProfile.REGISTRATION
+        and profile.last_otp_sent_at
+        and (now - profile.last_otp_sent_at) < timedelta(minutes=OTP_RESEND_WAIT_MINUTES)
+    ):
         messages.error(request, f'Please wait at least {OTP_RESEND_WAIT_MINUTES} minutes before requesting a new OTP.')
         return redirect('verify_otp')
 
@@ -194,21 +238,178 @@ def resend_otp_view(request):
     return redirect('verify_otp')
 
 
+def forgot_password_view(request):
+    if request.method == 'POST':
+        email = request.POST.get('email', '').strip()
+        if not email:
+            messages.error(request, 'Please enter the email address associated with your account.')
+            return redirect('forgot_password')
+
+        user = User.objects.filter(email__iexact=email).first()
+        if not user:
+            messages.error(request, 'No account found with that email address.')
+            return redirect('forgot_password')
+
+        profile, _ = UserProfile.objects.get_or_create(user=user)
+        now = timezone.now()
+        if (
+            profile.otp_purpose == UserProfile.RESET_PASSWORD
+            and profile.last_otp_sent_at
+            and (now - profile.last_otp_sent_at) < timedelta(minutes=OTP_RESEND_WAIT_MINUTES)
+        ):
+            wait_delta = timedelta(minutes=OTP_RESEND_WAIT_MINUTES) - (now - profile.last_otp_sent_at)
+            wait_seconds = max(0, int(wait_delta.total_seconds()))
+            wait_minutes = (wait_seconds // 60) + (1 if wait_seconds % 60 else 0)
+            request.session['password_reset_user_id'] = user.pk
+            messages.info(
+                request,
+                f'An OTP was recently sent. Please wait about {wait_minutes} minute(s) before requesting a new one.',
+            )
+            return redirect('password_reset_verify')
+
+        _issue_password_reset_otp(request, user)
+        request.session['password_reset_user_id'] = user.pk
+        messages.success(request, 'We sent an OTP to your email. Enter it below to reset your password.')
+        return redirect('password_reset_verify')
+
+    return render(request, 'forgot_password.html')
+
+
+def password_reset_verify_view(request):
+    reset_user_id = request.session.get('password_reset_user_id')
+    if not reset_user_id:
+        messages.error(request, 'No password reset request in progress.')
+        return redirect('forgot_password')
+
+    try:
+        user = User.objects.get(pk=reset_user_id)
+    except User.DoesNotExist:
+        request.session.pop('password_reset_user_id', None)
+        messages.error(request, 'We could not find that account. Please try again.')
+        return redirect('forgot_password')
+
+    profile, _ = UserProfile.objects.get_or_create(user=user)
+    if profile.otp_purpose != UserProfile.RESET_PASSWORD:
+        request.session.pop('password_reset_user_id', None)
+        messages.error(request, 'No password reset OTP pending. Please request a new code.')
+        return redirect('forgot_password')
+
+    if request.method == 'POST':
+        code = request.POST.get('otp', '').strip()
+        password1 = request.POST.get('password1')
+        password2 = request.POST.get('password2')
+
+        if not code:
+            messages.error(request, 'Please enter the OTP code sent to your email.')
+            return redirect('password_reset_verify')
+
+        if not password1 or not password2:
+            messages.error(request, 'Please enter and confirm your new password.')
+            return redirect('password_reset_verify')
+
+        if password1 != password2:
+            messages.error(request, 'Passwords do not match.')
+            return redirect('password_reset_verify')
+
+        if not profile.otp_matches(code):
+            messages.error(request, 'Invalid OTP code.')
+            return redirect('password_reset_verify')
+
+        if profile.otp_is_expired():
+            request.session.pop('password_reset_user_id', None)
+            messages.error(request, 'Your OTP has expired. Please request a new password reset OTP.')
+            return redirect('forgot_password')
+
+        user.set_password(password1)
+        user.save(update_fields=['password'])
+        profile.mark_otp_used()
+        request.session.pop('password_reset_user_id', None)
+        messages.success(request, 'Your password has been reset. You can now log in.')
+        return redirect('login')
+
+    return render(
+        request,
+        'password_reset_verify.html',
+        {
+            'email': user.email,
+        },
+    )
+
+
 def login_view(request):
     if request.method == 'POST':
-        username = request.POST.get('username')
+        username = request.POST.get('username', '').strip()
         password = request.POST.get('password')
+
+        user_lookup = User.objects.filter(username=username).first()
+        if user_lookup and not user_lookup.is_active:
+            user_lookup.is_active = True
+            user_lookup.save(update_fields=['is_active'])
 
         user = authenticate(request, username=username, password=password)
         if user:
-            if not user.is_active:
-                messages.error(request, 'Please activate your account first.')
-                return redirect('login')
+            profile, _ = UserProfile.objects.get_or_create(user=user)
             login(request, user)
+
+            if not profile.email_verified:
+                request.session['pending_user_id'] = user.pk
+                now = timezone.now()
+                wait_window = timedelta(minutes=OTP_RESEND_WAIT_MINUTES)
+                needs_new_otp = (
+                    profile.otp_purpose != UserProfile.REGISTRATION
+                    or not profile.last_otp_sent_at
+                    or (now - profile.last_otp_sent_at) >= wait_window
+                )
+
+                if needs_new_otp:
+                    _issue_otp_and_send_email(request, user)
+                    messages.info(
+                        request,
+                        'Please verify your email. We just sent a fresh OTP to your inbox.',
+                    )
+                else:
+                    wait_delta = wait_window - (now - profile.last_otp_sent_at)
+                    wait_seconds = max(0, int(wait_delta.total_seconds()))
+                    wait_minutes = (wait_seconds // 60) + (1 if wait_seconds % 60 else 0)
+                    messages.info(
+                        request,
+                        f'Please verify your email using the OTP we already sent. You can request a new one in about {wait_minutes} minute(s).',
+                    )
+                return redirect('verify_otp')
+
             messages.success(request, f'Welcome, {user.username}!')
             return redirect('/')
         else:
-            messages.error(request, 'Invalid username or password.')
+            if user_lookup:
+                if user_lookup.check_password(password or ''):
+                    profile, _ = UserProfile.objects.get_or_create(user=user_lookup)
+                    request.session['pending_user_id'] = user_lookup.pk
+                    now = timezone.now()
+                    wait_window = timedelta(minutes=OTP_RESEND_WAIT_MINUTES)
+                    needs_new_otp = (
+                        profile.otp_purpose != UserProfile.REGISTRATION
+                        or not profile.last_otp_sent_at
+                        or (now - profile.last_otp_sent_at) >= wait_window
+                    )
+                    if needs_new_otp:
+                        _issue_otp_and_send_email(request, user_lookup)
+                        messages.info(
+                            request,
+                            'Please verify your email. We just sent a fresh OTP to your inbox.',
+                        )
+                    else:
+                        wait_delta = wait_window - (now - profile.last_otp_sent_at)
+                        wait_seconds = max(0, int(wait_delta.total_seconds()))
+                        wait_minutes = (wait_seconds // 60) + (1 if wait_seconds % 60 else 0)
+                        messages.info(
+                            request,
+                            f'Please verify your email using the OTP we already sent. You can request a new one in about {wait_minutes} minute(s).',
+                        )
+                    return redirect('verify_otp')
+
+                messages.error(request, 'Incorrect password. Please try again.')
+            else:
+                messages.error(request, 'No account found with that username. Please register first.')
             return redirect('login')
 
     return render(request, 'login.html')

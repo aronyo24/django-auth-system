@@ -37,8 +37,11 @@ class UserProfile(models.Model):
             self.save(update_fields=['email_verified'])
 
     # OTP helpers -----------------------------------------------------
-    def issue_otp(self, code, purpose, expires_at):
+    def issue_otp(self, code, purpose, expires_at, *, mark_unverified=None):
         """Persist a freshly generated OTP and reset related metadata."""
+
+        if mark_unverified is None:
+            mark_unverified = purpose == self.REGISTRATION
 
         now = timezone.now()
         self.otp_code = code
@@ -47,19 +50,22 @@ class UserProfile(models.Model):
         self.otp_consumed_at = None
         self.otp_used = False
         self.last_otp_sent_at = now
-        self.email_verified = False
-        self.save(
-            update_fields=[
-                'otp_code',
-                'otp_purpose',
-                'otp_expires_at',
-                'otp_consumed_at',
-                'otp_used',
-                'last_otp_sent_at',
-                'email_verified',
-                'updated_at',
-            ]
-        )
+
+        update_fields = [
+            'otp_code',
+            'otp_purpose',
+            'otp_expires_at',
+            'otp_consumed_at',
+            'otp_used',
+            'last_otp_sent_at',
+            'updated_at',
+        ]
+
+        if mark_unverified:
+            self.email_verified = False
+            update_fields.append('email_verified')
+
+        self.save(update_fields=update_fields)
 
     def otp_is_expired(self):
         return bool(self.otp_expires_at and timezone.now() > self.otp_expires_at)
