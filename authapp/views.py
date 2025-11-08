@@ -16,6 +16,8 @@ from django.utils.http import urlsafe_base64_decode, urlsafe_base64_encode
 
 from .models import UserProfile
 
+
+
 OTP_LENGTH = 6
 OTP_EXPIRATION_MINUTES = 15
 OTP_RESEND_WAIT_MINUTES = 5
@@ -86,6 +88,33 @@ def home_view(request):
     return render(request, 'base.html')
 
 
+
+def dashboard_view(request):
+    
+    # Ensure authenticated
+    if not request.user.is_authenticated:
+        return redirect('login')
+
+    # Ensure UserProfile exists and check verification
+    try:
+        profile = request.user.profile
+    except UserProfile.DoesNotExist:
+        profile = UserProfile.objects.create(user=request.user)
+
+    if not profile.email_verified:
+        # Mark this user's id as pending so the OTP flow can reference it
+        request.session['pending_user_id'] = request.user.pk
+        return redirect('verify_otp')
+
+    user = request.user
+    full_name = f"{user.first_name} {user.last_name}".strip() or user.username
+    return render(request, 'dashboard.html', {'full_name': full_name, 'email': user.email})
+
+
+
+
+
+
 def register_view(request):
     if request.method == 'POST':
         first_name = request.POST.get('first_name', '').strip()
@@ -119,9 +148,12 @@ def register_view(request):
             last_name=last_name,
         )
         display_name = f"{first_name} {last_name}".strip() or username
+        # Create or update the user's profile. The UserProfile model does not
+        # have an `email` field (email is stored on the User model), so use
+        # the OneToOne `user` relation as the lookup key and set display_name
+        # in defaults.
         UserProfile.objects.update_or_create(
             user=user,
-            email= email,
             defaults={'display_name': display_name},
         )
 
@@ -378,7 +410,7 @@ def login_view(request):
                 return redirect('verify_otp')
 
             messages.success(request, f'Welcome, {user.username}!')
-            return redirect('/')
+            return redirect('dashboard')
         else:
             if user_lookup:
                 if user_lookup.check_password(password or ''):

@@ -6,3 +6,9 @@ class AuthappConfig(AppConfig):
     name = 'authapp'
     label = 'accounts'
     verbose_name = 'Authentication App'
+    def ready(self):
+        # Wire up signal handlers for social account verification
+        try:
+            import authapp.signals  # noqa: F401
+        except Exception:
+            pass

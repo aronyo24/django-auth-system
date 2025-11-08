@@ -12,4 +12,5 @@ urlpatterns = [
     path('forgot-password/verify/', views.password_reset_verify_view, name='password_reset_verify'),
     path('login/', views.login_view, name='login'),
     path('logout/', views.logout_view, name='logout'),
+    path('dashboard/', views.dashboard_view, name='dashboard'),
 ]
