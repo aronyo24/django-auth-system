@@ -1,0 +1,21 @@
+# Django configuration
+SECRET_KEY=change-me
+DEBUG=True
+ALLOWED_HOSTS=localhost,127.0.0.1
+
+# Email configuration
+EMAIL_BACKEND=django.core.mail.backends.smtp.EmailBackend
+EMAIL_HOST=smtp.gmail.com
+EMAIL_PORT=587
+EMAIL_USE_TLS=True
+EMAIL_USE_SSL=False
+# Note: EMAIL_USE_TLS and EMAIL_USE_SSL are mutually exclusive. Set only one to True.
+EMAIL_HOST_USER=your-email@example.com
+EMAIL_HOST_PASSWORD=your-strong-password
+DEFAULT_FROM_EMAIL=your-email@example.com
+
+
+# Google OAuth2 configuration
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+GOOGLE_REDIRECT_URI=

@@ -34,6 +34,8 @@ INSTALLED_APPS = [
     'django.contrib.sites',
     'authapp.apps.AuthappConfig',
 
+    # 'authapp'
+
     # Allauth
     'allauth',
     'allauth.account',
